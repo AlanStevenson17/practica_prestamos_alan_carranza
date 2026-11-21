@@ -1,5 +1,8 @@
 from odoo import api, fields, models
-from odoo.exceptions import UserError
+from odoo.exceptions import UserError, ValidationError
+
+DIAS_MAXIMOS_ESTUDIANTE = 7
+LIMITE_EQUIPOS_ESTUDIANTE = 2
 
 
 class PrestamoPrestamo(models.Model):
@@ -20,7 +23,6 @@ class PrestamoPrestamo(models.Model):
         string="Fecha de préstamo", required=True, default=fields.Date.context_today
     )
     fecha_devolucion = fields.Date(string="Fecha de devolución", required=True)
-
     state = fields.Selection(
         [
             ("borrador", "Borrador"),
@@ -33,23 +35,12 @@ class PrestamoPrestamo(models.Model):
         default="borrador",
         tracking=True,
     )
-
-    linea_ids = fields.One2many(
-        "prestamo.linea",
-        "prestamo_id",
-        string="Equipos"
-    )
-
+    linea_ids = fields.One2many("prestamo.linea", "prestamo_id", string="Equipos")
     cantidad_equipos = fields.Integer(
-        string="Cantidad de equipos",
-        compute="_compute_cantidad_equipos",
-        store=True
+        string="Cantidad de equipos", compute="_compute_cantidad_equipos", store=True
     )
-
     dias_prestamo = fields.Integer(
-        string="Días de préstamo",
-        compute="_compute_dias_prestamo",
-        store=True
+        string="Días de préstamo", compute="_compute_dias_prestamo", store=True
     )
 
     @api.depends("linea_ids")
@@ -61,21 +52,54 @@ class PrestamoPrestamo(models.Model):
     def _compute_dias_prestamo(self):
         for prestamo in self:
             if prestamo.fecha_prestamo and prestamo.fecha_devolucion:
-                dias = (
-                    prestamo.fecha_devolucion - prestamo.fecha_prestamo
-                ).days
+                dias = (prestamo.fecha_devolucion - prestamo.fecha_prestamo).days
                 prestamo.dias_prestamo = dias
             else:
                 prestamo.dias_prestamo = 0
+
+    @api.constrains("fecha_prestamo", "fecha_devolucion", "tipo_solicitante")
+    def _check_fechas(self):
+        for prestamo in self:
+            if prestamo.fecha_devolucion < prestamo.fecha_prestamo:
+                raise ValidationError(
+                    "La fecha de devolución no puede ser anterior a la fecha de préstamo."
+                )
+            if (
+                prestamo.tipo_solicitante == "estudiante"
+                and prestamo.dias_prestamo > DIAS_MAXIMOS_ESTUDIANTE
+            ):
+                raise ValidationError(
+                    f"Un estudiante puede pedir prestado un equipo máximo "
+                    f"{DIAS_MAXIMOS_ESTUDIANTE} días."
+                )
+
+    @api.constrains("linea_ids")
+    def _check_equipos_repetidos(self):
+        for prestamo in self:
+            if len(prestamo.linea_ids) != len(prestamo.linea_ids.equipo_id):
+                raise ValidationError(
+                    "Un equipo no puede aparecer dos veces en el mismo préstamo."
+                )
 
     def action_prestar(self):
         for prestamo in self:
             if prestamo.state != "borrador":
                 raise UserError("Solo se puede prestar un préstamo en borrador.")
-
             if not prestamo.linea_ids:
                 raise UserError("Agregue al menos un equipo al préstamo.")
-
+            if (
+                prestamo.tipo_solicitante == "estudiante"
+                and len(prestamo.linea_ids) > LIMITE_EQUIPOS_ESTUDIANTE
+            ):
+                raise UserError(
+                    f"Un estudiante puede llevar máximo {LIMITE_EQUIPOS_ESTUDIANTE} "
+                    f"equipos y este préstamo tiene {len(prestamo.linea_ids)}."
+                )
+            for linea in prestamo.linea_ids:
+                if linea.equipo_id.estado != "disponible":
+                    raise UserError(
+                        f"El equipo {linea.equipo_id.name} no está disponible."
+                    )
             prestamo.linea_ids.equipo_id.write({"estado": "prestado"})
             prestamo.state = "prestado"
             prestamo.message_post(
@@ -87,7 +111,6 @@ class PrestamoPrestamo(models.Model):
         for prestamo in self:
             if prestamo.state not in ("prestado", "atrasado"):
                 raise UserError("Solo se puede devolver un préstamo activo.")
-
             prestamo.linea_ids.equipo_id.write({"estado": "disponible"})
             prestamo.state = "devuelto"
             prestamo.message_post(body="Los equipos fueron devueltos.")
