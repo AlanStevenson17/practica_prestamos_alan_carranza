@@ -8,7 +8,10 @@
             <xpath expr="//notebook" position="inside">
                 <page name="prestamos" string="Préstamos">
                     <field name="prestamo_ids" readonly="1">
-                        <list>
+                        <list
+                            decoration-danger="state == 'atrasado'"
+                            decoration-muted="state == 'devuelto'"
+                        >
                             <field name="name"/>
                             <field name="fecha_prestamo"/>
                             <field name="fecha_devolucion"/>
